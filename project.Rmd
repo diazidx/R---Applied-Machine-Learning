@@ -1,0 +1,211 @@
+---
+title: "Prediction Assignment Writeup"
+author: "I. Diaz, PEng."
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+# Data
+
+The data for this project come from this source:
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+
+Training: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+Test: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+# Development
+
+## Loading Libraries
+
+```{r, echo=FALSE}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(randomForest)
+library(corrplot)
+library(gbm)
+library(RCurl)
+library(e1071)
+
+```
+
+## Getting and Wrangling Data
+
+I'll split training data into 70% to train the model, and remaining 30% to validate de model. The testing data in no used yet.
+
+```{r, echo=TRUE}
+# set the URL for the download
+Url1 <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+Url2  <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# download the datasets
+data_train <- read.csv(url(Url1))
+data_test  <- read.csv(url(Url2))
+
+# create a partition with the training dataset 
+split  <- createDataPartition(data_train$classe, p=0.7, list=FALSE)
+training_set <- data_train[split, ]
+testing_set  <- data_train[-split, ]
+dim(training_set)
+
+```
+```{r, echo=TRUE }
+dim(testing_set)
+```
+The training set is made of 13737 rows and 160 columns, many of them are NAs or empty cells. It's necessary to remove them in order to have a tidy data.
+
+#### Removing irrelevant data
+The Near Zero variance (NZV) variables are also removed and the ID variables as well.
+```{r, echo=TRUE}
+NZV <- nearZeroVar(training_set)
+training_set <- training_set[, -NZV]
+testing_set  <- testing_set[, -NZV]
+dim(training_set)
+```
+
+```{r, echo=TRUE}
+dim(testing_set)
+
+```
+Next, NAs is going to be removed from training and testing data. 
+```{r, echo=TRUE}
+AllNA    <- sapply(training_set, function(x) mean(is.na(x))) > 0.95
+training_set <- training_set[, AllNA==FALSE]
+testing_set  <- testing_set[, AllNA==FALSE]
+dim(training_set)
+```
+
+```{r, echo=TRUE}
+dim(testing_set)
+```
+Now, data is suppose to be cleaned but is steel necessary to remove the identification variables, those are not necessary to our development. 
+
+
+```{r, echo=TRUE}
+training_set <- training_set[, -(1:5)]
+testing_set  <- testing_set[, -(1:5)]
+dim(training_set)
+```
+
+```{r, echo= TRUE}
+dim(testing_set)
+```
+The cleaning process is completed. 
+
+## Exploratory Analysis
+
+### Correlation
+
+```{r, echo= TRUE}
+corrmat <- cor(training_set[, -54])
+corrplot(corrmat, order = "FPC", method = "color", type = "lower", 
+         tl.cex = 0.8, tl.col = rgb(0, 0, 0))
+```
+
+In the analysis performed above dark color in both sides means high correlation, direct or inverse.
+
+## Building the Model
+
+### Random Forest
+```{r, echo= TRUE}
+# fit the model
+set.seed(12345)
+controlRF <- trainControl(method="cv", number=3, verboseIter=FALSE)
+modFitRandForest <- train(classe ~ ., data=training_set, method="rf",
+                          trControl=controlRF)
+modFitRandForest$finalModel
+```
+```{r, echo=TRUE}
+# prediction on Test dataset
+predictRandForest <- predict(modFitRandForest, newdata=testing_set)
+confMatRandForest <- confusionMatrix(predictRandForest, testing_set$classe)
+confMatRandForest
+```
+
+
+```{r, echo=TRUE}
+# plot matrix results
+plot(confMatRandForest$table, col = confMatRandForest$byClass, 
+     main = paste("Random Forest - Accuracy =",
+                  round(confMatRandForest$overall['Accuracy'], 4)))
+```
+
+```{r, echo=TRUE}
+plot(modFitRandForest$finalModel,main="Model error, Random forest model by number of trees")
+```
+
+
+### Desicion Trees
+
+```{r, echo=TRUE}
+# model fit
+set.seed(12345)
+modFitDecTree <- rpart(classe ~ ., data=training_set, method="class")
+fancyRpartPlot(modFitDecTree)
+```
+
+```{r, echo=TRUE}
+# prediction on Test dataset
+predictDecTree <- predict(modFitDecTree, newdata=testing_set, type="class")
+confMatDecTree <- confusionMatrix(predictDecTree, testing_set$classe)
+confMatDecTree
+```
+
+```{r, echo=TRUE}
+# plot matrix results
+plot(confMatDecTree$table, col = confMatDecTree$byClass, 
+     main = paste("Decision Tree - Accuracy =",
+                  round(confMatDecTree$overall['Accuracy'], 4)))
+```
+
+
+### Generalized Boosted Model
+
+```{r, echo=TRUE}
+set.seed(12345)
+controlGBM <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+modFitGBM  <- train(classe ~ ., data=training_set, method = "gbm",
+                    trControl = controlGBM, verbose = FALSE)
+modFitGBM$finalModel
+```
+
+
+```{r, echo=TRUE}
+# prediction on Test dataset
+predictGBM <- predict(modFitGBM, newdata=testing_set)
+confMatGBM <- confusionMatrix(predictGBM, testing_set$classe)
+confMatGBM
+```
+
+
+```{r, echo=TRUE}
+# plot matrix results
+plot(confMatGBM$table, col = confMatGBM$byClass, 
+     main = paste("GBM - Accuracy =", round(confMatGBM$overall['Accuracy'], 4)))
+```
+
+```{r, echo=TRUE}
+plot(modFitGBM)
+```
+
+
+# Applying model to testing data.
+
+This is necessary in order to get the quiz.
+In this particular case, I'll use the Randorm forrest model due to better accuracy. 
+
+```{r,, echo=TRUE}
+predictTEST <- predict(modFitRandForest, newdata=data_test)
+predictTEST
+```
+
+
